@@ -25,6 +25,18 @@ const (
 	CALL        //myFunction(x)
 )
 
+// 優先次序 map
+var precedences = map[token.TokenType]int{
+	token.EQ:       EQUALS,
+	token.NOT_EQ:   EQUALS,
+	token.LT:       LESSGREATER,
+	token.GT:       LESSGREATER,
+	token.PLUS:     SUM,
+	token.MINUS:    SUM,
+	token.SLASH:    PRODUCT,
+	token.ASTERISK: PRODUCT,
+}
+
 // Parser class
 type Parser struct {
 	l         *lexer.Lexer
@@ -55,6 +67,19 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(token.MINUS, p.parsePrefixExpression)
 	p.registerPrefix(token.TRUE, p.parseBoolean)
 	p.registerPrefix(token.FALSE, p.parseBoolean)
+	p.registerPrefix(token.LPAREN, p.parseGroupExpression)
+	p.registerPrefix(token.IF, p.parseIfExpression)
+
+	//加入中序解析
+	p.infixParseFns = make(map[token.TokenType]infixParseFn)
+	p.registerInfix(token.PLUS, p.parseInfixExpression)
+	p.registerInfix(token.MINUS, p.parseInfixExpression)
+	p.registerInfix(token.SLASH, p.parseInfixExpression)
+	p.registerInfix(token.ASTERISK, p.parseInfixExpression)
+	p.registerInfix(token.EQ, p.parseInfixExpression)
+	p.registerInfix(token.NOT_EQ, p.parseInfixExpression)
+	p.registerInfix(token.LT, p.parseInfixExpression)
+	p.registerInfix(token.GT, p.parseInfixExpression)
 
 	// Read two tokens, so curToken and peekToken are both set
 	p.nextToken()
@@ -151,6 +176,8 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 }
 
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
+	defer untrace(trace("parseExpressionStatement"))
+
 	stmt := &ast.ExpressionStatement{Token: p.curToken}
 
 	stmt.Expression = p.parseExpression(LOWEST)
@@ -169,7 +196,9 @@ func (p *Parser) noPrefixParseFnError(t token.TokenType) {
 }
 
 // 檢查是有否類似的解析函數，如果是nil 回復nil
-func (p *Parser) parseExpression(precedure int) ast.Expression {
+func (p *Parser) parseExpression(precedence int) ast.Expression {
+	defer untrace(trace("parseExpression"))
+
 	prefix := p.prefixParseFns[p.curToken.Type]
 	if prefix == nil {
 		p.noPrefixParseFnError(p.curToken.Type)
@@ -178,11 +207,29 @@ func (p *Parser) parseExpression(precedure int) ast.Expression {
 	//如果有找到prefix 把她丟給leftExp
 	leftExp := prefix()
 
+	//如果下一個不是; 且 優先級別小於下一個token的優先級別
+	for !p.peekTokenIs(token.SEMICOLON) && precedence < p.peekPrecedence() {
+		//中序去查表
+		infix := p.infixParseFns[p.peekToken.Type]
+		//中序等於nil
+		if infix == nil {
+			//回傳leftExpression
+			return leftExp
+		}
+
+		//往下token
+		p.nextToken()
+		//把leftExp 丟給中序
+		leftExp = infix(leftExp)
+	}
+
 	return leftExp
 }
 
 // 解析整數
 func (p *Parser) parseIntegerIteral() ast.Expression {
+	defer untrace(trace("parseIntegerLiteral"))
+
 	lit := &ast.IntegerLiteral{Token: p.curToken}
 
 	value, err := strconv.ParseInt(p.curToken.Literal, 0, 64)
@@ -199,6 +246,8 @@ func (p *Parser) parseIntegerIteral() ast.Expression {
 }
 
 func (p *Parser) parsePrefixExpression() ast.Expression {
+	defer untrace(trace("parsePrefixExpression"))
+
 	expression := &ast.PrefixExpression{
 		Token:    p.curToken,
 		Operator: p.curToken.Literal,
@@ -211,8 +260,107 @@ func (p *Parser) parsePrefixExpression() ast.Expression {
 	return expression
 }
 
+// 中序Expression
+func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
+	defer untrace(trace("parseInfixExpression"))
+
+	//先把當下的token放到infix
+	expression := &ast.InfixExpression{
+		Token:    p.curToken,
+		Operator: p.curToken.Literal,
+		Left:     left,
+	}
+	//優先級別
+	precedence := p.curPrecedence()
+	//往下個走
+	p.nextToken()
+	//右邊要用ParseExpression
+	/*if expression.Operator == "+" {
+		expression.Right = p.parseExpression(precedence - 1)
+	} else {
+		expression.Right = p.parseExpression(precedence)
+	}*/
+	expression.Right = p.parseExpression(precedence)
+
+	return expression
+}
+
 func (p *Parser) parseBoolean() ast.Expression {
 	return &ast.Boolean{Token: p.curToken, Value: p.curTokenIs(token.TRUE)}
+}
+
+func (p *Parser) parseGroupExpression() ast.Expression {
+	p.nextToken()
+
+	exp := p.parseExpression(LOWEST)
+
+	//如果下一個token不等於)
+	if !p.expectPeek(token.RPAREN) {
+		//回傳nil
+		return nil
+	}
+
+	return exp
+}
+
+func (p *Parser) parseIfExpression() ast.Expression {
+	expression := &ast.IfExpression{Token: p.curToken}
+
+	//如果不為 (
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	p.nextToken()
+
+	expression.Condition = p.parseExpression(LOWEST)
+
+	//如果不為 )
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	//如果不為 {
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+
+	expression.Consequence = p.parseBlockStatement()
+
+	//有沒有else
+	if p.peekTokenIs(token.ELSE) {
+		p.nextToken()
+
+		//開頭不為 {
+		if !p.expectPeek(token.LBRACE) {
+			return nil
+		}
+
+		expression.Alternative = p.parseBlockStatement()
+	}
+
+	return expression
+}
+
+func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	block := &ast.BlockStatement{Token: p.curToken}
+	block.Statements = []ast.Statement{}
+
+	p.nextToken()
+
+	//不等於 } 且 不等於 EOF
+	for !p.curTokenIs(token.RBRACE) && !p.curTokenIs(token.EOF) {
+		stmt := p.parseStatement()
+
+		//如果裡面的statement可以解析 則append
+		if stmt != nil {
+			block.Statements = append(block.Statements, stmt)
+		}
+		//往下token移動
+		p.nextToken()
+	}
+
+	return block
 }
 
 // 檢查當前的token type
@@ -248,4 +396,22 @@ func (p *Parser) peekError(t token.TokenType) {
 		t, p.peekToken.Type)
 
 	p.errors = append(p.errors, msg)
+}
+
+// 看下一個token優先次序
+func (p *Parser) peekPrecedence() int {
+	if p, ok := precedences[p.peekToken.Type]; ok {
+		return p
+	}
+
+	return LOWEST
+}
+
+// 看目前token的優先次序
+func (p *Parser) curPrecedence() int {
+	if p, ok := precedences[p.curToken.Type]; ok {
+		return p
+	}
+
+	return LOWEST
 }
