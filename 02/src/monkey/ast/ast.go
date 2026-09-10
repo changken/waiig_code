@@ -3,6 +3,7 @@ package ast
 import (
 	"bytes"
 	"monkey/token"
+	"strings"
 )
 
 type Node interface {
@@ -37,6 +38,10 @@ func (p *Program) TokenLiteral() string {
 }
 
 // 把Statement 裡面的String做concat
+// 注意：這裡故意不加分隔符號，因為 parser_test.go 的
+// TestOperatorPrecedenceParsing 裡 "3 + 4; -5 * 5;" 期望印成
+// "(3 + 4)((-5) * 5)"（中間沒有空格），加了會讓那個測試壞掉。
+// 同樣問題在 BlockStatement.String() 裡處理方式不同，見該處註解。
 func (p *Program) String() string {
 	var out bytes.Buffer
 	for _, s := range p.Statements {
@@ -214,7 +219,8 @@ func (ie *IfExpression) String() string {
 	out.WriteString(ie.Consequence.String())
 
 	if ie.Alternative != nil {
-		out.WriteString("else ")
+		// 修：Consequence 現在有 "{ }" 了，else 前面要補空格才不會黏在一起
+		out.WriteString(" else ")
 		out.WriteString(ie.Alternative.String())
 	}
 
@@ -233,9 +239,74 @@ func (bs *BlockStatement) TokenLiteral() string { return bs.Token.Literal }
 func (bs *BlockStatement) String() string {
 	var out bytes.Buffer
 
-	for _, s := range bs.Statements {
+	// 修：原本沒包大括號，if/fn 印出來會跟 else 或參數黏在一起
+	out.WriteString("{ ")
+	for i, s := range bs.Statements {
+		// 修：block 裡有多個 statement 時（例如 if/else 後面還有 return），
+		// 原本直接接起來會變成 "}return" 黏在一起，中間補空格分開
+		if i > 0 {
+			out.WriteString(" ")
+		}
 		out.WriteString(s.String())
 	}
+	out.WriteString(" }")
+
+	return out.String()
+}
+
+// function
+type FunctionLiteral struct {
+	Token      token.Token
+	Parameters []*Identifier
+	Body       *BlockStatement
+}
+
+func (fl *FunctionLiteral) expressionNode() {}
+func (fl *FunctionLiteral) TokenLiteral() string {
+	return fl.Token.Literal
+}
+func (fl *FunctionLiteral) String() string {
+	var out bytes.Buffer
+
+	params := []string{}
+	for _, p := range fl.Parameters {
+		params = append(params, p.String())
+	}
+
+	out.WriteString(fl.TokenLiteral())
+	out.WriteString("(")
+	// 修：跟 CallExpression 一樣，逗號後面要留空格
+	out.WriteString(strings.Join(params, ", "))
+	out.WriteString(")")
+	out.WriteString(" ")
+	out.WriteString(fl.Body.String())
+
+	return out.String()
+}
+
+// CallExpression
+type CallExpression struct {
+	Token     token.Token // the '(' token
+	Function  Expression  // Identifier for FuntionLiteral
+	Arguments []Expression
+}
+
+func (ce *CallExpression) expressionNode()      {}
+func (ce *CallExpression) TokenLiteral() string { return ce.Token.Literal }
+func (ce *CallExpression) String() string {
+	var out bytes.Buffer
+
+	//蒐集arguments
+	args := []string{}
+	for _, a := range ce.Arguments {
+		args = append(args, a.String())
+	}
+
+	out.WriteString(ce.Function.String())
+	out.WriteString("(")
+	//該死 這邊', ' 後面要空白
+	out.WriteString(strings.Join(args, ", "))
+	out.WriteString(")")
 
 	return out.String()
 }

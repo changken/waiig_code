@@ -35,6 +35,7 @@ var precedences = map[token.TokenType]int{
 	token.MINUS:    SUM,
 	token.SLASH:    PRODUCT,
 	token.ASTERISK: PRODUCT,
+	token.LPAREN:   CALL, //( 代表call函數有最高級別
 }
 
 // Parser class
@@ -69,6 +70,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(token.FALSE, p.parseBoolean)
 	p.registerPrefix(token.LPAREN, p.parseGroupExpression)
 	p.registerPrefix(token.IF, p.parseIfExpression)
+	p.registerPrefix(token.FUNCTION, p.parseFunctionLiteral)
 
 	//加入中序解析
 	p.infixParseFns = make(map[token.TokenType]infixParseFn)
@@ -80,6 +82,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(token.NOT_EQ, p.parseInfixExpression)
 	p.registerInfix(token.LT, p.parseInfixExpression)
 	p.registerInfix(token.GT, p.parseInfixExpression)
+	p.registerInfix(token.LPAREN, p.parseCallExpression)
 
 	// Read two tokens, so curToken and peekToken are both set
 	p.nextToken()
@@ -150,10 +153,16 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 		return nil
 	}
 
+	//這邊要推進一個token 不然=會無法解析
+	p.nextToken()
+
 	//先不解吸expression, 如果還沒遇到;再繼續取下一個token
 	// TODO: We're skipping the expressions until we
-	// encounter a semicolon
-	for !p.curTokenIs(token.SEMICOLON) {
+	//之前跳過let 後面的expression, 現在補回來
+	stmt.Value = p.parseExpression(LOWEST)
+
+	// 分號是可選的，有的話就往下推進一個token
+	if p.peekTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
 
@@ -167,8 +176,11 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 
 	//這邊先偷懶，先取出return -> ;之間的token 先讓他知道是return statement
 	// TODO: We're skipping the expressions until we
-	// encounter a semicolon
-	for !p.curTokenIs(token.SEMICOLON) {
+	//之前省略了 現在補回來要解析他們的expression
+	stmt.ReturnValue = p.parseExpression(LOWEST)
+
+	// 分號是可選的，有的話就往下推進一個token
+	if p.peekTokenIs(token.SEMICOLON) {
 		p.nextToken()
 	}
 
@@ -361,6 +373,96 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	}
 
 	return block
+}
+
+func (p *Parser) parseFunctionLiteral() ast.Expression {
+	lit := &ast.FunctionLiteral{Token: p.curToken}
+
+	//如果不是 (
+	if !p.expectPeek(token.LPAREN) {
+		return nil
+	}
+
+	//解析parameters
+	lit.Parameters = p.parseFunctionParameters()
+
+	//如果不是 {
+	if !p.expectPeek(token.LBRACE) {
+		return nil
+	}
+
+	//解析body
+	lit.Body = p.parseBlockStatement()
+
+	return lit
+}
+
+func (p *Parser) parseFunctionParameters() []*ast.Identifier {
+	identifiers := []*ast.Identifier{}
+
+	//如果是 ) 回傳identifier list
+	if p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		return identifiers
+	}
+
+	p.nextToken()
+
+	//第一個 identifier
+	ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+	identifiers = append(identifiers, ident)
+
+	//如果是 , 往下2個token走
+	//等於 ,identifier 一對
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		ident := &ast.Identifier{Token: p.curToken, Value: p.curToken.Literal}
+		identifiers = append(identifiers, ident)
+	}
+
+	//如果下一個不等於 )
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	return identifiers
+}
+
+func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
+	exp := &ast.CallExpression{Token: p.curToken, Function: function}
+	exp.Arguments = p.parseCallArguments()
+	return exp
+}
+
+func (p *Parser) parseCallArguments() []ast.Expression {
+	args := []ast.Expression{}
+
+	//如果是 ) 回傳整個args list
+	if p.peekTokenIs(token.RPAREN) {
+		p.nextToken()
+		return args
+	}
+
+	//第一個arguments
+	p.nextToken()
+	args = append(args, p.parseExpression(LOWEST))
+
+	//第二個arguments
+	//,expression 型式一阻
+	for p.peekTokenIs(token.COMMA) {
+		p.nextToken()
+		p.nextToken()
+		args = append(args, p.parseExpression(LOWEST))
+	}
+
+	//如果找完不等於 )
+	//這邊要注意 找到如果是 ) 就要推進token 沒有的話則nil
+	if !p.expectPeek(token.RPAREN) {
+		return nil
+	}
+
+	return args
 }
 
 // 檢查當前的token type
