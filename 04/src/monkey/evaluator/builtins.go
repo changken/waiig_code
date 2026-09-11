@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"fmt"
 	"monkey/object"
 )
 
@@ -126,6 +127,17 @@ var builtins = map[string]*object.Builtin{
 			newElements[length] = args[1]
 			//回傳
 			return &object.Array{Elements: newElements}
+		},
+	},
+	//內置puts
+	"puts": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			//分行印出
+			for _, arg := range args {
+				fmt.Println(arg.Inspect())
+			}
+			//回傳NULL
+			return NULL
 		},
 	},
 }
