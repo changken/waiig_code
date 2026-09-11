@@ -240,7 +240,7 @@ func (bs *BlockStatement) String() string {
 	var out bytes.Buffer
 
 	// 修：原本沒包大括號，if/fn 印出來會跟 else 或參數黏在一起
-	out.WriteString("{ ")
+	//out.WriteString("{ ")
 	for i, s := range bs.Statements {
 		// 修：block 裡有多個 statement 時（例如 if/else 後面還有 return），
 		// 原本直接接起來會變成 "}return" 黏在一起，中間補空格分開
@@ -249,7 +249,7 @@ func (bs *BlockStatement) String() string {
 		}
 		out.WriteString(s.String())
 	}
-	out.WriteString(" }")
+	//out.WriteString(" }")
 
 	return out.String()
 }

@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"fmt"
 	"monkey/ast"
 	"monkey/object"
 )
@@ -11,20 +12,34 @@ var (
 	FALSE = &object.Boolean{Value: false}
 )
 
-func Eval(node ast.Node) object.Object {
+func Eval(node ast.Node, env *object.Environment) object.Object {
 	switch node := node.(type) {
 	//Statement
 	case *ast.Program:
-		return evalProgram(node)
+		return evalProgram(node, env)
 	case *ast.ExpressionStatement:
-		return Eval(node.Expression)
+		return Eval(node.Expression, env)
 	case *ast.BlockStatement:
-		return evalBlockStatement(node)
+		return evalBlockStatement(node, env)
 	case *ast.ReturnStatement:
 		//先把return value本身拿去解析
-		val := Eval(node.ReturnValue)
+		val := Eval(node.ReturnValue, env)
+		//檢查是否回傳error
+		if isError(val) {
+			return val
+		}
 		//在包裝一層
 		return &object.ReturnValue{Value: val}
+	case *ast.LetStatement:
+		val := Eval(node.Value, env)
+		//檢查是否有error
+		if isError(val) {
+			return val
+		}
+		//把該變數設為該值
+		env.Set(node.Name.Value, val)
+	case *ast.Identifier:
+		return evalIdentifier(node, env)
 
 	//Expression
 	case *ast.IntegerLiteral:
@@ -32,34 +47,73 @@ func Eval(node ast.Node) object.Object {
 	case *ast.Boolean:
 		return nativeBoolToBooleanObject(node.Value)
 	case *ast.PrefixExpression:
-		right := Eval(node.Right)
+		right := Eval(node.Right, env)
+		//檢查是否回傳error
+		if isError(right) {
+			return right
+		}
 		return evalPrefixExpression(node.Operator, right)
 	case *ast.InfixExpression:
-		left := Eval(node.Left)
-		right := Eval(node.Right)
+		left := Eval(node.Left, env)
+		//檢查是否回傳error
+		if isError(left) {
+			return left
+		}
+		right := Eval(node.Right, env)
+		//檢查是否回傳error
+		if isError(right) {
+			return right
+		}
 		return evalInfixExpression(node.Operator, left, right)
 	case *ast.IfExpression:
-		return evalIfExpression(node)
+		return evalIfExpression(node, env)
+	//把ast包裝成object.Function
+	case *ast.FunctionLiteral:
+		params := node.Parameters
+		body := node.Body
+		return &object.Function{Parameters: params, Env: env, Body: body}
+	case *ast.CallExpression:
+		function := Eval(node.Function, env)
+		//如果有錯誤 回傳error
+		if isError(function) {
+			return function
+		}
+		args := evalExpressions(node.Arguments, env)
+		if len(args) == 1 && isError(args[0]) {
+			return args[0]
+		}
+
+		return applyFunction(function, args)
 	}
 
 	return nil
 }
 
-func evalProgram(program *ast.Program) object.Object {
+func evalProgram(program *ast.Program, env *object.Environment) object.Object {
 	var result object.Object
 
 	for _, statement := range program.Statements {
-		result = Eval(statement)
+		result = Eval(statement, env)
 
-		if returnValue, ok := result.(*object.ReturnValue); ok {
+		/*if returnValue, ok := result.(*object.ReturnValue); ok {
 			return returnValue.Value
+		}*/
+
+		switch result := result.(type) {
+		case *object.ReturnValue:
+			return result.Value
+		//回傳error
+		case *object.Error:
+			return result
 		}
+
 	}
 
 	return result
 }
 
-func evalStatement(stmts []ast.Statement) object.Object {
+// 廢止
+/*func evalStatement(stmts []ast.Statement) object.Object {
 	var result object.Object
 
 	for _, statement := range stmts {
@@ -72,16 +126,20 @@ func evalStatement(stmts []ast.Statement) object.Object {
 	}
 
 	return result
-}
+}*/
 
-func evalBlockStatement(block *ast.BlockStatement) object.Object {
+func evalBlockStatement(block *ast.BlockStatement, env *object.Environment) object.Object {
 	var result object.Object
 
 	for _, statement := range block.Statements {
-		result = Eval(statement)
+		result = Eval(statement, env)
 
-		if result != nil && result.Type() == object.RETURN_VALUE_OBJ {
-			return result
+		if result != nil {
+			rt := result.Type()
+			//如果回傳有returnvalue || error
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+				return result
+			}
 		}
 	}
 
@@ -103,7 +161,8 @@ func evalPrefixExpression(operator string, right object.Object) object.Object {
 	case "-":
 		return evalMinusPrefixOpeatorExpression(right)
 	default:
-		return NULL
+		//如果前置符號不為! - 的話 就是不知道的operator
+		return newError("unknown operator: %s%s", operator, right.Type())
 	}
 }
 
@@ -122,6 +181,12 @@ func evalBangOperatorExpression(right object.Object) object.Object {
 }
 
 func evalMinusPrefixOpeatorExpression(right object.Object) object.Object {
+	//如果右邊的型態不為 integer, 前置-號會報錯誤
+	if right.Type() != object.INTEGER_OBJ {
+		return newError("unknown operator: -%s",
+			right.Type())
+	}
+
 	//如果不為整數 則回傳null
 	if right.Type() != object.INTEGER_OBJ {
 		return NULL
@@ -156,8 +221,9 @@ func evalIntegerInfixExpression(
 	case "!=":
 		return nativeBoolToBooleanObject(leftVal != rightVal)
 	default:
-		return NULL
-
+		//如果operator不為上面的條件 則是不知道的operator
+		return newError("unknown operator: %s %s %s",
+			left.Type(), operator, right.Type())
 	}
 }
 
@@ -172,21 +238,98 @@ func evalInfixExpression(
 		return nativeBoolToBooleanObject(left == right)
 	case operator == "!=":
 		return nativeBoolToBooleanObject(left != right)
+	//如果中置兩者型態不一樣的話 應該要回傳type mismatch
+	case left.Type() != right.Type():
+		return newError("type mismatch: %s %s %s",
+			left.Type(), operator, right.Type())
 	default:
+		return newError("unknown operator: %s %s %s",
+			left.Type(), operator, right.Type())
+	}
+}
+
+func evalIfExpression(
+	ie *ast.IfExpression,
+	env *object.Environment,
+) object.Object {
+	condition := Eval(ie.Condition, env)
+
+	//檢查是否回傳error
+	if isError(condition) {
+		return condition
+	}
+
+	if isTruthy(condition) {
+		return Eval(ie.Consequence, env)
+	} else if ie.Alternative != nil {
+		return Eval(ie.Alternative, env)
+	} else {
 		return NULL
 	}
 }
 
-func evalIfExpression(ie *ast.IfExpression) object.Object {
-	condition := Eval(ie.Condition)
-
-	if isTruthy(condition) {
-		return Eval(ie.Consequence)
-	} else if ie.Alternative != nil {
-		return Eval(ie.Alternative)
-	} else {
-		return NULL
+// 評估ident時 要把她取出來
+func evalIdentifier(
+	node *ast.Identifier,
+	env *object.Environment,
+) object.Object {
+	val, ok := env.Get(node.Value)
+	if !ok {
+		return newError("identifier not found: %s", node.Value)
 	}
+	return val
+}
+
+func evalExpressions(
+	exps []ast.Expression,
+	env *object.Environment,
+) []object.Object {
+	var result []object.Object
+
+	for _, e := range exps {
+		evaluated := Eval(e, env)
+		//有錯誤回傳錯誤
+		if isError(evaluated) {
+			return []object.Object{evaluated}
+		}
+		//蒐集argument
+		result = append(result, evaluated)
+	}
+
+	return result
+}
+
+func applyFunction(fn object.Object, args []object.Object) object.Object {
+	function, ok := fn.(*object.Function)
+	if !ok {
+		return newError("not a function: %s", fn.Type())
+	}
+
+	//新增一個函數的env
+	extendedEnv := extendFunctionEnv(function, args)
+	//解析
+	evaluated := Eval(function.Body, extendedEnv)
+	return unwrapReturnValue(evaluated)
+}
+
+func extendFunctionEnv(
+	fn *object.Function,
+	args []object.Object,
+) *object.Environment {
+	env := object.NewEnclosedEnvironment(fn.Env)
+
+	for paramIdx, param := range fn.Parameters {
+		env.Set(param.Value, args[paramIdx])
+	}
+
+	return env
+}
+func unwrapReturnValue(obj object.Object) object.Object {
+	if returnValue, ok := obj.(*object.ReturnValue); ok {
+		return returnValue.Value
+	}
+
+	return obj
 }
 
 func isTruthy(obj object.Object) bool {
@@ -200,4 +343,17 @@ func isTruthy(obj object.Object) bool {
 	default:
 		return true
 	}
+}
+
+func newError(format string, a ...interface{}) *object.Error {
+	return &object.Error{Message: fmt.Sprintf(format, a...)}
+}
+
+// 檢查obj是不是錯誤
+func isError(obj object.Object) bool {
+	if obj != nil {
+		return obj.Type() == object.ERROR_OBJ
+	}
+
+	return false
 }
