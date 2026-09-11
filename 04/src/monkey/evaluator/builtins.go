@@ -61,7 +61,7 @@ var builtins = map[string]*object.Builtin{
 
 			//他的type要是array
 			if args[0].Type() != object.ARRAY_OBJ {
-				return newError("argument to `first` must be ARRAY, got %s",
+				return newError("argument to `last` must be ARRAY, got %s",
 					args[0].Type())
 			}
 
@@ -85,7 +85,7 @@ var builtins = map[string]*object.Builtin{
 
 			//他的type要是array
 			if args[0].Type() != object.ARRAY_OBJ {
-				return newError("argument to `first` must be ARRAY, got %s",
+				return newError("argument to `rest` must be ARRAY, got %s",
 					args[0].Type())
 			}
 
@@ -112,7 +112,7 @@ var builtins = map[string]*object.Builtin{
 
 			//他的type要是array
 			if args[0].Type() != object.ARRAY_OBJ {
-				return newError("argument to `first` must be ARRAY, got %s",
+				return newError("argument to `push` must be ARRAY, got %s",
 					args[0].Type())
 			}
 
